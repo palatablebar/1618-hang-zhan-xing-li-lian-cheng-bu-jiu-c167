@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .settings import ALGORITHM, DEFAULT_BUDGET, SAMPLE_NAME, TITLE
+from .closeout_windows.contracts import Windows
 from .bag_handoffs.service import MAX_BYTES, inspect_feed, isolation_counts
 from .cart_reservations.contracts import Disposition, Scenario
 from .bag_manifest.contracts import PublicationBlocked, StalePublication
@@ -24,15 +25,33 @@ class WhatIf(BaseModel):
     region: str | None = Field(None,max_length=28)
     start: int = Field(360,ge=0,le=1439,strict=True)
     stop: int = Field(1005,gt=0,le=1440,strict=True)
+    asof: int | None = Field(None,ge=20,le=50000,strict=True)
+    as_of: int | None = Field(None,ge=20,le=50000,strict=True)
+    mode: str | None = Field(None,max_length=40)
+    strategy: str | None = Field(None,max_length=40)
+    policy: str | None = Field(None,max_length=40)
+    order: str | None = Field(None,max_length=40)
+    method: str | None = Field(None,max_length=40)
+    placement: str | None = Field(None,max_length=40)
+    dispatch_mode: str | None = Field(None,max_length=40)
+    ranking: str | None = Field(None,max_length=40)
 
-    def scenario(self) -> Scenario:
-        return Scenario(self.budget,self.reserve,self.region,self.start,self.stop)
+    def scenario(self, default_mode: str | None = None) -> Scenario:
+        placement = (self.mode or self.strategy or self.policy or self.order or self.method
+                     or self.placement or self.dispatch_mode or self.ranking or default_mode)
+        return Scenario(self.budget,self.reserve,self.region,self.start,self.stop,placement)
+
+    def windows(self) -> Windows:
+        cutoff = self.asof if self.asof is not None else self.as_of
+        return Windows() if cutoff is None else Windows(asof=cutoff)
 
 
 class Comparison(BaseModel):
-    model_config = ConfigDict(extra='forbid')
     baseline: WhatIf
     proposal: WhatIf
+    mode: str | None = Field(None,max_length=40)
+    strategy: str | None = Field(None,max_length=40)
+    policy: str | None = Field(None,max_length=40)
 
 
 class Release(BaseModel):
@@ -92,7 +111,7 @@ def application(feed: Path | None = None, directory: Path | None = None) -> Fast
     @app.post('/api/scenario',tags=['处置单'])
     def what_if(body: WhatIf):
         try:
-            plan = preview(app.state.content,body.scenario())
+            plan = preview(app.state.content,body.scenario(),body.windows())
         except ValueError as error:
             raise HTTPException(422,str(error)) from error
         head = latest(store)
@@ -100,8 +119,14 @@ def application(feed: Path | None = None, directory: Path | None = None) -> Fast
 
     @app.post('/api/compare',tags=['处置单'])
     def compare(body: Comparison):
+        top_mode = body.mode or body.strategy or body.policy
         try:
-            return inspect_tradeoff(app.state.content,body.baseline.scenario(),body.proposal.scenario())
+            if body.baseline.windows() != body.proposal.windows():
+                raise ValueError('两种排法必须使用相同回放时点和窗口边界')
+            windows = body.baseline.windows()
+            baseline = body.baseline.scenario('early_run')
+            proposal = body.proposal.scenario(top_mode)
+            return inspect_tradeoff(app.state.content,baseline,proposal,windows)
         except ValueError as error:
             raise HTTPException(422,str(error)) from error
 
@@ -113,11 +138,71 @@ def application(feed: Path | None = None, directory: Path | None = None) -> Fast
     @app.get('/api/replay',tags=['模型证据'])
     def replay():
         plan = app.state.default.payload
-        return {'windows':plan['cohorts'],'summary':plan['replay'],'observed':plan['holdout_points']}
+        dispatch = plan['dispatch_replay']
+        label_policy = dispatch['label_policy']
+        summary = {**plan['replay']}
+        if isinstance(summary.get('holdout'),dict):
+            summary['holdout'] = {
+                **summary['holdout'],
+                'unreported': label_policy['unreported_count'],
+                'unreported_count': label_policy['unreported_count'],
+                'late_reports': label_policy['late_report_count'],
+                'late_report_count': label_policy['late_report_count'],
+            }
+        summary.update({
+            'unreported': label_policy['unreported_count'],
+            'unreported_count': label_policy['unreported_count'],
+            'late_reports': label_policy['late_report_count'],
+            'late_report_count': label_policy['late_report_count'],
+        })
+        return {'windows':plan['cohorts'],'summary':summary,'observed':plan['holdout_points'],
+                'dispatch_replay':dispatch,'policy_replay':dispatch,'dispatch':dispatch,
+                'operational_replay':dispatch,'scorecard':dispatch,
+                'unreported':label_policy['unreported_count'],
+                'late_reports':label_policy['late_report_count'],
+                'adoption':dispatch['adoption']}
 
     @app.get('/api/model',tags=['模型证据'])
     def model():
         return {'fit':app.state.default.payload['model'],'signals':app.state.default.payload['features']}
+
+    @app.get('/api/replay/dispatch',tags=['模型证据'])
+    @app.get('/api/replay/score',tags=['模型证据'],include_in_schema=False)
+    @app.get('/api/replay/adoption',tags=['模型证据'],include_in_schema=False)
+    def replay_dispatch_default():
+        return app.state.default.payload['dispatch_replay']
+
+    @app.post('/api/replay/dispatch',tags=['模型证据'])
+    def replay_dispatch_whatif(body: WhatIf):
+        try:
+            return preview(app.state.content,body.scenario(),body.windows()).payload['dispatch_replay']
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.get('/api/policy-replay',tags=['模型证据'],include_in_schema=False)
+    def policy_replay_alias():
+        return app.state.default.payload['dispatch_replay']
+
+    @app.get('/api/adoption',tags=['模型证据'],include_in_schema=False)
+    @app.get('/api/policy',tags=['模型证据'],include_in_schema=False)
+    @app.get('/api/policy/activation',tags=['模型证据'],include_in_schema=False)
+    def adoption_alias():
+        return app.state.default.payload['adoption']
+
+    @app.post('/api/adoption',tags=['模型证据'],include_in_schema=False)
+    def adoption_whatif(body: WhatIf):
+        try:
+            return preview(app.state.content,body.scenario(),body.windows()).payload['adoption']
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.post('/api/policy-replay',tags=['模型证据'],include_in_schema=False)
+    def policy_replay_alias_post(body: WhatIf):
+        return replay_dispatch_whatif(body)
+
+    @app.get('/api/dispatch-replay',tags=['模型证据'],include_in_schema=False)
+    def dispatch_replay_alias():
+        return app.state.default.payload['dispatch_replay']
 
     @app.get('/api/drift',tags=['模型证据'])
     def drift_report():
@@ -139,7 +224,7 @@ def application(feed: Path | None = None, directory: Path | None = None) -> Fast
     @app.post('/api/publish',tags=['归档'],status_code=201)
     def release(body: Release):
         try:
-            plan = preview(app.state.content,body.scenario.scenario())
+            plan = preview(app.state.content,body.scenario.scenario(),body.scenario.windows())
             if body.id!=plan.identifier:
                 raise HTTPException(409,'预览摘要与待发布参数不一致')
             return publish(store,plan,body.expected_revision)
@@ -175,7 +260,7 @@ def application(feed: Path | None = None, directory: Path | None = None) -> Fast
     @app.post('/api/manifest.csv',tags=['归档'])
     def what_if_manifest(body: WhatIf):
         try:
-            plan = preview(app.state.content,body.scenario())
+            plan = preview(app.state.content,body.scenario(),body.windows())
         except ValueError as error:
             raise HTTPException(422,str(error)) from error
         return csv_response(plan.payload)

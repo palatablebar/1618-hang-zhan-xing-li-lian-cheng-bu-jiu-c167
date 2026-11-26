@@ -27,6 +27,8 @@ def parser() -> ArgumentParser:
         params.add_argument('--start',type=int,default=360)
         params.add_argument('--stop',type=int,default=1005)
         params.add_argument('--asof',type=int,default=126)
+        params.add_argument('--mode',default=None)
+        params.add_argument('--strategy',default=None)
         if name=='manifest':
             params.add_argument('--output',type=Path)
         if name=='publish':
@@ -37,6 +39,9 @@ def parser() -> ArgumentParser:
     comparison.add_argument('--to-budget',type=int,required=True)
     comparison.add_argument('--reserve',type=int,default=0)
     comparison.add_argument('--region')
+    comparison.add_argument('--from-mode',default=None)
+    comparison.add_argument('--to-mode',default=None)
+    comparison.add_argument('--asof',type=int,default=126)
     ledger = commands.add_parser('ledger',help='读取已发布版本')
     ledger.add_argument('--latest',action='store_true')
     return cli
@@ -57,11 +62,12 @@ def run(argv=None) -> int:
             print(as_json(latest(args.store) if args.latest else history(args.store)))
             return 0
         if args.command=='compare':
-            original = Scenario(args.from_budget,args.reserve,args.region)
-            proposed = Scenario(args.to_budget,args.reserve,args.region)
-            print(as_json(inspect_tradeoff(load_path(args.source),original,proposed)))
+            original = Scenario(args.from_budget,args.reserve,args.region,mode=args.from_mode)
+            proposed = Scenario(args.to_budget,args.reserve,args.region,mode=args.to_mode)
+            print(as_json(inspect_tradeoff(load_path(args.source),original,proposed,Windows(asof=args.asof))))
             return 0
-        scenario = Scenario(args.budget,args.reserve,args.region,args.start,args.stop)
+        scenario = Scenario(args.budget,args.reserve,args.region,args.start,args.stop,
+                            args.mode,strategy=args.strategy)
         result = preview(load_path(args.source),scenario,Windows(asof=args.asof))
         if args.command=='publish':
             if args.id!=result.identifier:
@@ -75,7 +81,8 @@ def run(argv=None) -> int:
                 args.output.write_text('\ufeff'+text,encoding='utf-8')
         elif args.command=='replay':
             body = result.payload
-            print(as_json({key:body[key] for key in ('cohorts','model','replay','holdout_points','drift')}))
+            print(as_json({key:body[key] for key in ('cohorts','model','replay','holdout_points','drift',
+                                                     'dispatch_replay','adoption')}))
         else:
             print(as_json({'id':result.identifier,'plan':result.payload}))
     except (ValueError,OSError) as error:

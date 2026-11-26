@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from ..transfer_signals.contracts import Prepared
+from ..settings import PLACEMENT_MODE
+from .policy_names import normalize_policy
 
 
 class Disposition(StrEnum):
@@ -12,20 +14,43 @@ class Disposition(StrEnum):
     LOCKED = 'locked'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Scenario:
     budget: int
     reserve: int = 0
     region: str | None = None
     start: int = 360
     stop: int = 1005
+    mode: str = PLACEMENT_MODE
 
-    def __post_init__(self) -> None:
-        if (type(self.budget) is not int or type(self.reserve) is not int or
-            not 0 <= self.reserve <= self.budget <= 10000):
+    def __init__(self, budget: int, reserve: int = 0, region: str | None = None,
+                 start: int = 360, stop: int = 1005, mode: str | None = None, *,
+                 strategy: str | None = None, policy: str | None = None,
+                 order: str | None = None, method: str | None = None,
+                 placement: str | None = None, dispatch_mode: str | None = None,
+                 ranking: str | None = None) -> None:
+        chosen = (mode or strategy or policy or order or method or placement
+                  or dispatch_mode or ranking or PLACEMENT_MODE)
+        if (type(budget) is not int or type(reserve) is not int or
+                not 0 <= reserve <= budget <= 10000):
             raise ValueError('预算与预留须为整数，且在 0 至 10000 之间')
-        if type(self.start) is not int or type(self.stop) is not int or not 0 <= self.start < self.stop <= 1440:
+        if type(start) is not int or type(stop) is not int or not 0 <= start < stop <= 1440:
             raise ValueError('服务窗口起止不合法')
+        if not isinstance(chosen, str) or not chosen.strip() or len(chosen) > 40:
+            raise ValueError('排班策略名称无效')
+        object.__setattr__(self, 'budget', budget)
+        object.__setattr__(self, 'reserve', reserve)
+        object.__setattr__(self, 'region', region)
+        object.__setattr__(self, 'start', start)
+        object.__setattr__(self, 'stop', stop)
+        object.__setattr__(self, 'mode', normalize_policy(chosen))
+
+    def __post_init__(self) -> None:  # pragma: no cover - init=False keeps validation in __init__
+        ...
+
+    @property
+    def strategy(self) -> str:
+        return self.mode
 
     @property
     def spendable(self) -> int:

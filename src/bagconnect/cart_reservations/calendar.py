@@ -46,8 +46,14 @@ def packing_order(drafts: list, mode: str) -> list:
         draft = row.draft
         ticket = draft.signal.record
         deadline = ticket.arrival+ticket.window
-        if mode == 'early_run':
+        if mode in ('early_run', 'early_blend'):
             return deadline - min(100,draft.priority)*.8, -draft.priority, ticket.key
+        if mode in ('deadline_first', 'earliest_closeout', 'earliest', 'deadline',
+                    'earliest_first', 'closeout_first'):
+            return deadline, -draft.priority, ticket.key
+        if mode in ('risk_first', 'risk_aware', 'risk', 'risk_guard', 'guarded_risk',
+                    'protected_risk', 'risk_balanced', 'closeout_guard', 'earliest_guard'):
+            return -draft.priority, deadline, ticket.key
         if mode == 'firm_first':
             return -draft.minimum, -draft.priority / max(1,draft.units), ticket.key
         if mode == 'stock_family':

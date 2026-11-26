@@ -6,6 +6,7 @@ const ui = {
   quota: find('#quota'), reserve: find('#reserve'), region: find('#region'), status: find('#status'),
   queue: find('#queue'), detail: find('#detail'), filter: find('#filter'), search: find('#search'),
   chart: find('#chart'), stats: find('#kpis'), replay: find('#replay-data'),
+  policy: find('#policy-data'),
   start: find('#start'), stop: find('#stop'), publish: find('#publish'), download: find('#download')
 };
 const fmt = new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 2});
@@ -157,6 +158,40 @@ function filterRows() {
   select(selection);
 }
 
+function policyBasis(data) {
+  if (!ui.policy) return;
+  const review = data.dispatch_replay || data.policy_replay || data.dispatch;
+  if (!review) {
+    ui.policy.replaceChildren(node('p','暂无排班回放证据。','domain-note'));
+    return;
+  }
+  const adoption = review.adoption || review.recommendation || review;
+  ui.policy.dataset.adopt = String(Boolean(adoption.adopt || adoption.enabled));
+  ui.policy.dataset.enabled = ui.policy.dataset.adopt;
+  const before = review.baseline || {};
+  const after = review.candidate || {};
+  const head = node('div','','policy-head');
+  head.append(node('strong', adoption.adopt ? '达到启用条件' : '暂不启用',
+    `policy-verdict ${adoption.adopt ? 'enable' : 'hold'}`));
+  head.append(node('span', adoption.adopt ? '新排法可启用' : '继续使用原排法','context-text'));
+  const grid = node('dl','','evidence-list policy-metrics');
+  const rows = [
+    ['原排法覆盖已确认误机', `${mark(before.covered_confirmed_missed)} 件 / ${mark(before.covered_confirmed_missed_cases)} 单`],
+    ['新排法覆盖已确认误机', `${mark(after.covered_confirmed_missed)} 件 / ${mark(after.covered_confirmed_missed_cases)} 单`],
+    ['覆盖增量', `${mark(adoption.covered_confirmed_missed_delta)} 件`],
+    ['已确认误机总量', `${mark(after.confirmed_missed_total)} 单`],
+    ['迟到回报（仅计分）', `${mark(after.late_reports)} 单`],
+    ['未回报（另算）', `${mark(after.unreported)} 单`],
+    ['车位 / 安检窗', adoption.identical_conditions === false ? '条件不一致' : '两排法相同'],
+    ['受保护最早截关单', (adoption.protected_earliest_keys || review.earliest_closeout_keys || []).join('、') || '—']
+  ];
+  rows.forEach(([key,value]) => grid.append(node('dt',key),node('dd',value)));
+  const reasons = node('ul','','policy-reasons');
+  for (const text of adoption.reasons || []) reasons.append(node('li',text));
+  if (adoption.basis) reasons.append(node('li',adoption.basis));
+  ui.policy.replaceChildren(head,grid,reasons);
+}
+
 function replay(data) {
   const recap = data.replay.holdout;
   const kind = recap.mae === undefined ? 'Brier' : '平均绝对误差';
@@ -185,6 +220,7 @@ function render(response) {
     return cell;
   }));
   find('#estimate-title').textContent = modeOf(data);
+  policyBasis(data);
   draw(ui.chart, data, {node,mark,time,choose:key=>{ ui.search.value=''; ui.filter.value=''; selection=key; filterRows(); }});
   replay(data);
   filterRows();

@@ -18,16 +18,31 @@ def draft(signal: Prepared,value: float | None,radius: float) -> Draft:
     return interpret(signal,value,radius)
 
 
-def quantity(candidate: Draft, allowance: int, other: int, scenario: Scenario) -> int:
+def quantity(candidate: Draft, allowance: int, other: int, scenario: Scenario,
+             mode: str | None = None) -> int:
     cap = min(allowance,candidate.units)
-    if PLACEMENT_MODE == 'stock_family':
+    placement_mode = mode or scenario.mode or PLACEMENT_MODE
+    if placement_mode == 'stock_family':
         family_stock = (scenario.spendable+1)//2
         cap = min(cap,max(0,family_stock-other))
     rounded = cap - cap%candidate.step
     return rounded if rounded>=candidate.minimum else 0
 
 
-def allocate(items: tuple[Candidate,...], scenario: Scenario) -> Schedule:
+def calendar_scope(mode: str) -> str:
+    # Ordering-only policies must not silently change the physical pool/security lane.
+    return mode if mode in ('segment_gap','context_lock','early_run') else 'early_run'
+
+
+def allocate(items: tuple[Candidate,...], scenario: Scenario,
+             mode: str | None = None, protected_keys: tuple[str,...] | set[str] | frozenset[str] = (),
+             *, strategy: str | None = None, policy: str | None = None,
+             protect_earliest: bool = False, keep_earliest: bool = False) -> Schedule:
+    placement_mode = mode or strategy or policy or scenario.mode or PLACEMENT_MODE
+    protected = set(protected_keys or ())
+    unknown_protected = protected - {item.draft.signal.record.key for item in items}
+    if unknown_protected:
+        raise ValueError(f'受保护单据不存在: {sorted(unknown_protected)[0]}')
     decisions: dict[str,Booking] = {}
     staged: list[Candidate] = []
     for item in items:
@@ -48,8 +63,23 @@ def allocate(items: tuple[Candidate,...], scenario: Scenario) -> Schedule:
     resource_use: Counter = Counter()
     schedules: set[tuple] = set()
     served = set()
-    ordered = packing_order(staged,PLACEMENT_MODE)
-    if PLACEMENT_MODE == 'station_fair':
+    ordered = packing_order(staged,placement_mode)
+    if (protect_earliest or keep_earliest or placement_mode == 'risk_guard') and not protected and staged:
+        first_deadline = min(
+            item.draft.signal.record.arrival + item.draft.signal.record.window
+            for item in staged
+        )
+        protected = {
+            item.draft.signal.record.key for item in staged
+            if item.draft.signal.record.arrival + item.draft.signal.record.window == first_deadline
+        }
+    if protected:
+        protected_rows = [item for item in ordered if item.draft.signal.record.key in protected]
+        other_rows = [item for item in ordered if item.draft.signal.record.key not in protected]
+        # Protected closeout work gets the first choice of the same calendar and capacity.
+        protected_rows = packing_order(protected_rows,'early_run')
+        ordered = protected_rows + other_rows
+    if placement_mode == 'station_fair':
         first_in_region, followups = [], []
         for option in ordered:
             region = option.draft.signal.record.region
@@ -61,8 +91,8 @@ def allocate(items: tuple[Candidate,...], scenario: Scenario) -> Schedule:
         ticket = plan.signal.record
         physical = (ticket.region,ticket.pool)
         identity = (*physical,plan.resource) if SEPARATE_CONTEXTS else physical
-        amount = quantity(plan,remaining,resource_use[plan.resource],scenario)
-        slot = cursor.seek(plan,scenario,PLACEMENT_MODE)
+        amount = quantity(plan,remaining,resource_use[plan.resource],scenario,placement_mode)
+        slot = cursor.seek(plan,scenario,calendar_scope(placement_mode))
         if not amount:
             reason = '剩余资源量不足以完成最小作业单元'
         elif POOL_LIMIT and group_count[physical] >= POOL_LIMIT:
@@ -73,7 +103,7 @@ def allocate(items: tuple[Candidate,...], scenario: Scenario) -> Schedule:
             reason = '未找到完整可服务窗口'
         else:
             start,end = slot
-            cursor.commit(plan,PLACEMENT_MODE,start,end)
+            cursor.commit(plan,calendar_scope(placement_mode),start,end)
             reason = plan.why if amount == plan.units else f'{plan.why}，本窗只确认 {amount} 个单位'
             decisions[ticket.key] = Booking(item,Disposition.BOOKED,amount,start,end,reason)
             remaining -= amount

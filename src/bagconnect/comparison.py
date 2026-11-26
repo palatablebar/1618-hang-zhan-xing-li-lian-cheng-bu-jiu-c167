@@ -2,7 +2,8 @@ from math import isclose
 
 from .closeout_windows.contracts import Windows
 from .cart_reservations.contracts import Scenario
-from .process import preview
+from .process import prepare_batch, preview
+from .replay_policy import compare_named_policies, compare_policy_replay, replay_dispatch
 
 
 def inspect_tradeoff(content: bytes,original: Scenario,alternative: Scenario,windows: Windows=Windows()) -> dict:
@@ -33,6 +34,27 @@ def inspect_tradeoff(content: bytes,original: Scenario,alternative: Scenario,win
         raise RuntimeError('方案差异占用与总账不平')
     previous_risk = old.payload['business']['exposure']
     next_risk = planned.payload['business']['exposure']
+    batch = prepare_batch(content,windows)
+    dispatch_replay = compare_named_policies(batch,original,alternative,windows)
+    policy_review = compare_policy_replay(batch,original,windows)
+    adoption = dispatch_replay['adoption']
     return {'base':old.identifier,'candidate':planned.identifier,'model':old.model,'booked_delta':right_sum-left_sum,
             'exposure_delta':round(next_risk-previous_risk,3),'metric_unit':planned.payload['business']['exposure_unit'],
-            'budget_delta':alternative.budget-original.budget,'changes':changed,'transitions':dict(sorted(status_pairs.items()))}
+            'budget_delta':alternative.budget-original.budget,'changes':changed,'transitions':dict(sorted(status_pairs.items())),
+            'dispatch_replay':dispatch_replay,'replay_policy':dispatch_replay,
+            'policy_replay':dispatch_replay,'replay':dispatch_replay,
+            'policy_comparison':dispatch_replay,'scorecard':dispatch_replay,
+            'policy_review':policy_review,'guarded_replay':policy_review,
+            'recommended_adoption':policy_review['adoption'],
+            'adoption':adoption,
+            'covered_confirmed_missed_delta':adoption['covered_confirmed_missed_delta'],
+            'covered_confirmed_missed_cases_delta':adoption['covered_confirmed_missed_cases_delta'],
+            'adopt':adoption['adopt'],'enabled':adoption['enabled'],'enable':adoption['enable'],
+            'should_enable':adoption['should_enable'],'adoption_reasons':adoption['reasons']}
+
+
+compare_plans = inspect_tradeoff
+compare_scenarios = inspect_tradeoff
+tradeoff_review = inspect_tradeoff
+compare_replay_policies = compare_policy_replay
+dispatch_policy_replay = replay_dispatch

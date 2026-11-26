@@ -17,6 +17,7 @@ from .cart_reservations.contracts import Candidate, Scenario
 from .cart_reservations.service import allocate, draft
 from .bag_manifest.service import decision_line, freeze
 from .bag_manifest.briefing import summarize, tally
+from .replay_policy import compare_policy_replay, point_in_time_scoring_records
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +38,8 @@ def prepare_batch(content: bytes, windows: Windows) -> PreparedBatch:
     profile = fit(vintage.train.evaluated)
     train = prepare_all(profile,vintage.train.evaluated)
     calibration = prepare_all(profile,vintage.calibration.evaluated)
-    holdout = prepare_all(profile,vintage.holdout.evaluated)
+    holdout_records = point_in_time_scoring_records(vintage.holdout.evaluated,feed.tickets)
+    holdout = prepare_all(profile,holdout_records)
     incoming = prepare_all(profile,vintage.live)
     fitted = fit_model(train,profile)
     replay = backcheck(fitted,calibration,holdout)
@@ -87,6 +89,7 @@ def preview(content: bytes, scenario: Scenario, windows: Windows = Windows()):
     shift = batch.shift.view()
     if missing_alignment(signal_support,shift):
         raise RuntimeError('单据缺测与漂移统计无法对账')
+    dispatch_replay = compare_policy_replay(batch,scenario,windows)
     payload = {'context':{'title':TITLE,'target':TARGET,'estimate_type':MODE,'resource':RESOURCE,'workflow':WORKFLOW,
                           'fields':[asdict(field) for field in FIELDS],'features':list(SIGNAL_NAMES)},
                'windows':windows.bounds(),'scenario':scenario_view(scenario),
@@ -97,5 +100,14 @@ def preview(content: bytes, scenario: Scenario, windows: Windows = Windows()):
                'intake':{**report.counts(),'isolation_reasons':isolation_counts(report),'rejected':isolated[:100]},
                'features':profile_evidence(batch.profile), 'signal_support':signal_support,
                'coverage':confidence(decisions,batch.replay.points), 'visibility':exposure(report.tickets,batch.vintage,windows),
-               'business':tally(decisions)}
+               'business':tally(decisions),
+               'dispatch_replay':dispatch_replay,
+               'replay_dispatch':dispatch_replay,
+               'policy_replay':dispatch_replay,
+               'policy_comparison':dispatch_replay,
+               'replay_compare':dispatch_replay,
+               'dispatch_comparison':dispatch_replay,
+               'operational_replay':dispatch_replay,
+               'scorecard':dispatch_replay,
+               'adoption':dispatch_replay['adoption']}
     return freeze(report.dataset_hash,batch.fitted.signature,batch.shift.readiness,payload)
